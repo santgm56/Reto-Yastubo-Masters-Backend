@@ -20,6 +20,8 @@ from app.routers.v1 import admin_companies_users as admin_companies_users_router
 from app.routers.v1 import admin_companies_status as admin_companies_status_router
 from app.routers.v1 import admin_regalias as admin_regalias_router
 from app.routers.v1 import admin_users_search as admin_users_search_router
+from app.routers.v1 import admin_products as admin_products_router
+from app.routers.v1 import admin_plans as admin_plans_router
 from app.routers.v1 import cancellations as cancellations_router
 from app.routers.v1 import frontend_bootstrap as frontend_bootstrap_router
 from app.routers.v1 import issuance as issuance_router
@@ -65,6 +67,8 @@ app.include_router(admin_companies_capitated_monthly_reports_router.router)
 app.include_router(admin_companies_core_router.router)
 app.include_router(admin_regalias_router.router)
 app.include_router(admin_users_search_router.router)
+app.include_router(admin_products_router.router)
+app.include_router(admin_plans_router.router)
 app.include_router(seller_dashboard_router.router)
 app.include_router(customer_shell_router.router)
 app.include_router(backoffice_shell.router)
