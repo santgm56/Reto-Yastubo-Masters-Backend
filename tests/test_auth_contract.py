@@ -161,3 +161,48 @@ def test_auth_login_rate_limit_returns_429_after_too_many_failures(client, monke
     assert payload.get("code") == "API_TOO_MANY_REQUESTS"
 
     auth_router.__dict__["_LOGIN_ATTEMPTS"].clear()
+
+
+def test_auth_password_policy_contract_shape(client) -> None:
+    response = client.get("/api/v1/auth/password-policy")
+
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert isinstance(payload.get("min"), int)
+    assert isinstance(payload.get("max"), int)
+    assert isinstance(payload.get("require"), dict)
+    assert isinstance(payload.get("messages"), dict)
+    assert "uppercase" in (payload.get("require") or {})
+    assert "noPersonal" in (payload.get("messages") or {})
+
+
+def test_auth_password_check_contract_and_validation(client) -> None:
+    weak = client.post(
+        "/api/v1/auth/password-check",
+        json={
+            "password": "admin123",
+            "first_name": "Admin",
+            "email": "admin@test.com",
+        },
+    )
+
+    assert weak.status_code == 200
+    weak_payload = weak.json()
+    assert weak_payload.get("valid") is False
+    assert isinstance(weak_payload.get("errors"), list)
+    assert len(weak_payload.get("errors") or []) > 0
+
+    strong = client.post(
+        "/api/v1/auth/password-check",
+        json={
+            "password": "XyZ!9876Safe",
+            "first_name": "Other",
+            "email": "other@test.com",
+        },
+    )
+
+    assert strong.status_code == 200
+    strong_payload = strong.json()
+    assert strong_payload.get("valid") is True
+    assert strong_payload.get("errors") == []

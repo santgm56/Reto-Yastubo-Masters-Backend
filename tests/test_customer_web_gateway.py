@@ -33,15 +33,18 @@ def test_customer_shell_served_by_fastapi_when_enabled(client) -> None:
 def test_customer_shell_redirects_to_legacy_when_disabled(client) -> None:
     original_enabled = customer_shell.settings.frontend_customer_shell_enabled
     original_legacy = customer_shell.settings.frontend_customer_legacy_base_url
+    original_customer_legacy_redirect = customer_shell.settings.frontend_customer_legacy_redirect_enabled
 
     customer_shell.settings.frontend_customer_shell_enabled = False
     customer_shell.settings.frontend_customer_legacy_base_url = "http://127.0.0.1:8000"
+    customer_shell.settings.frontend_customer_legacy_redirect_enabled = True
 
     try:
         response = client.get("/customer/transacciones", follow_redirects=False)
     finally:
         customer_shell.settings.frontend_customer_shell_enabled = original_enabled
         customer_shell.settings.frontend_customer_legacy_base_url = original_legacy
+        customer_shell.settings.frontend_customer_legacy_redirect_enabled = original_customer_legacy_redirect
 
     assert response.status_code == 307
     assert response.headers.get("location") == "http://127.0.0.1:8000/customer/transacciones"

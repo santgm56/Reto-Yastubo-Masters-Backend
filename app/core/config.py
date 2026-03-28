@@ -39,9 +39,19 @@ class Settings(BaseSettings):
     frontend_admin_legacy_retire_at: str = "2026-04-15"
     frontend_seller_legacy_retire_at: str = "2026-04-15"
     frontend_legacy_redirects_enabled: bool = True
-    frontend_customer_legacy_redirect_enabled: bool = True
+    frontend_customer_legacy_redirect_enabled: bool = False
     frontend_admin_legacy_redirect_enabled: bool = False
     frontend_seller_legacy_redirect_enabled: bool = False
+    password_min: int = Field(default=8, alias="PASSWORD_MIN")
+    password_max: int = Field(default=128, alias="PASSWORD_MAX")
+    password_require_uppercase: bool = Field(default=True, alias="PASSWORD_REQUIRE_UPPERCASE")
+    password_require_lowercase: bool = Field(default=True, alias="PASSWORD_REQUIRE_LOWERCASE")
+    password_require_numbers: bool = Field(default=True, alias="PASSWORD_REQUIRE_NUMBERS")
+    password_require_symbols: bool = Field(default=True, alias="PASSWORD_REQUIRE_SYMBOLS")
+    password_require_mixed_case: bool = Field(default=True, alias="PASSWORD_REQUIRE_MIXED_CASE")
+    app_regalias: str = Field(default="", alias="APP_REGALIAS")
+    frontend_storage_root: str = Field(default="../frontend-yastubo/storage/app", alias="FRONTEND_STORAGE_ROOT")
+    frontend_temp_file_secret: str = Field(default="change-me-fastapi-file-temp-secret", alias="FRONTEND_TEMP_FILE_SECRET")
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

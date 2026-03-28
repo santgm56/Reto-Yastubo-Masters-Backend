@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.db.database import get_db
-from app.schemas.auth import AuthLoginRequest, AuthLogoutRequest, AuthRefreshRequest
+from app.schemas.auth import AuthLoginRequest, AuthLogoutRequest, AuthPasswordCheckRequest, AuthRefreshRequest
 from app.schemas.common import ApiResponse
 from app.services.auth_service import AuthService
 
@@ -19,6 +19,7 @@ _REFRESH_COOKIE_NAME = "yastubo_refresh_token"
 _REFRESH_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 7
 _ACCESS_COOKIE_NAME = "yastubo_access_token"
 _ACCESS_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 8
+_PASSWORD_BANNED = ["password", "123456", "qwerty", "letmein", "admin"]
 
 
 def _request_id() -> str:
@@ -94,6 +95,106 @@ def _delete_auth_cookie(response: Response, key: str) -> None:
         path=str(settings.auth_cookie_path or "/"),
         domain=domain,
     )
+
+
+def _password_policy_payload() -> dict:
+    return {
+        "min": int(settings.password_min),
+        "max": int(settings.password_max),
+        "require": {
+            "uppercase": bool(settings.password_require_uppercase),
+            "lowercase": bool(settings.password_require_lowercase),
+            "numbers": bool(settings.password_require_numbers),
+            "symbols": bool(settings.password_require_symbols),
+            "mixed_case": bool(settings.password_require_mixed_case),
+            "letters": bool(
+                settings.password_require_uppercase
+                or settings.password_require_lowercase
+                or settings.password_require_mixed_case
+            ),
+        },
+        "messages": {
+            "min": f"Debe tener al menos {int(settings.password_min)} caracteres.",
+            "uppercase": "Debe incluir al menos una mayuscula.",
+            "lowercase": "Debe incluir al menos una minuscula.",
+            "numbers": "Debe incluir al menos un numero.",
+            "symbols": "Debe incluir al menos un simbolo.",
+            "max": f"No debe exceder {int(settings.password_max)} caracteres.",
+            "noPersonal": "No debe incluir tu nombre ni tu email.",
+        },
+    }
+
+
+def _check_password_errors(payload: AuthPasswordCheckRequest, policy: dict) -> list[str]:
+    password = str(payload.password or "")
+    errors: list[str] = []
+
+    min_len = int(policy.get("min") or 0)
+    max_len = int(policy.get("max") or 0)
+    require = policy.get("require") or {}
+    messages = policy.get("messages") or {}
+
+    if min_len > 0 and len(password) < min_len:
+        errors.append(str(messages.get("min") or "Debe cumplir longitud minima."))
+
+    if max_len > 0 and len(password) > max_len:
+        errors.append(str(messages.get("max") or "No debe exceder longitud maxima."))
+
+    if bool(require.get("uppercase")) and not any(ch.isupper() for ch in password):
+        errors.append(str(messages.get("uppercase") or "Debe incluir mayuscula."))
+
+    if bool(require.get("lowercase")) and not any(ch.islower() for ch in password):
+        errors.append(str(messages.get("lowercase") or "Debe incluir minuscula."))
+
+    if bool(require.get("numbers")) and not any(ch.isdigit() for ch in password):
+        errors.append(str(messages.get("numbers") or "Debe incluir numero."))
+
+    if bool(require.get("symbols")) and all(ch.isalnum() for ch in password):
+        errors.append(str(messages.get("symbols") or "Debe incluir simbolo."))
+
+    if bool(require.get("mixed_case")):
+        has_upper = any(ch.isupper() for ch in password)
+        has_lower = any(ch.islower() for ch in password)
+        if not (has_upper and has_lower):
+            errors.append(str(messages.get("uppercase") or "Debe incluir mayuscula."))
+            errors.append(str(messages.get("lowercase") or "Debe incluir minuscula."))
+
+    lowered = password.lower()
+    for banned in _PASSWORD_BANNED:
+        if banned and banned in lowered:
+            errors.append("La contraseña contiene patrones inseguros.")
+            break
+
+    email_local = ""
+    if payload.email:
+        email_local = str(payload.email).split("@", maxsplit=1)[0].lower().strip()
+
+    personal_parts = [
+        str(payload.first_name or "").lower().strip(),
+        str(payload.last_name or "").lower().strip(),
+        str(payload.display_name or "").lower().strip(),
+        email_local,
+    ]
+    if any(part and part in lowered for part in personal_parts):
+        errors.append(str(messages.get("noPersonal") or "No debe incluir datos personales."))
+
+    return errors
+
+
+@router.get("/password-policy")
+def password_policy() -> dict:
+    return _password_policy_payload()
+
+
+@router.post("/password-check")
+def password_check(payload: AuthPasswordCheckRequest) -> dict:
+    policy = _password_policy_payload()
+    errors = _check_password_errors(payload, policy)
+
+    return {
+        "valid": len(errors) == 0,
+        "errors": errors,
+    }
 
 
 @router.post("/login", response_model=ApiResponse)

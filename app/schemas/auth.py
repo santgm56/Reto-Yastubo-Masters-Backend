@@ -12,3 +12,11 @@ class AuthRefreshRequest(BaseModel):
 
 class AuthLogoutRequest(BaseModel):
     refresh_token: str | None = None
+
+
+class AuthPasswordCheckRequest(BaseModel):
+    password: str
+    first_name: str | None = None
+    last_name: str | None = None
+    display_name: str | None = None
+    email: EmailStr | None = None

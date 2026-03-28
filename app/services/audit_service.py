@@ -12,6 +12,9 @@ class AuditService:
         per_page: int = 10,
         action: str | None = None,
         realm: str | None = None,
+        actor_user_id: int | None = None,
+        from_date: str | None = None,
+        to_date: str | None = None,
     ) -> dict:
         page = max(1, page)
         per_page = max(1, min(per_page, 100))
@@ -28,6 +31,18 @@ class AuditService:
             where_parts.append("realm = :realm")
             params["realm"] = realm
 
+        if actor_user_id is not None and actor_user_id > 0:
+            where_parts.append("actor_user_id = :actor_user_id")
+            params["actor_user_id"] = actor_user_id
+
+        if from_date:
+            where_parts.append("created_at >= :from_date")
+            params["from_date"] = f"{from_date} 00:00:00"
+
+        if to_date:
+            where_parts.append("created_at <= :to_date")
+            params["to_date"] = f"{to_date} 23:59:59"
+
         where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
 
         total_query = text(f"SELECT COUNT(*) AS c FROM audit_logs {where_sql}")
@@ -36,10 +51,21 @@ class AuditService:
 
         rows_query = text(
             f"""
-            SELECT id, action, realm, actor_user_id, target_user_id, ip, context_json, created_at
-            FROM audit_logs
+            SELECT
+                a.id,
+                a.action,
+                a.realm,
+                a.actor_user_id,
+                u.name AS actor_name,
+                u.email AS actor_email,
+                a.target_user_id,
+                a.ip,
+                a.context_json,
+                a.created_at
+            FROM audit_logs a
+            LEFT JOIN users u ON u.id = a.actor_user_id
             {where_sql}
-            ORDER BY id DESC
+            ORDER BY a.id DESC
             LIMIT :limit OFFSET :offset
             """
         )
@@ -55,10 +81,12 @@ class AuditService:
                     "action": row["action"],
                     "realm": row["realm"],
                     "actor_user_id": row["actor_user_id"],
+                    "actor_name": row["actor_name"],
+                    "actor_email": row["actor_email"],
                     "target_user_id": row["target_user_id"],
                     "ip": row["ip"],
                     "context_json": row["context_json"],
-                    "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+                    "created_at": row["created_at"].strftime("%Y-%m-%d %H:%M:%S") if row["created_at"] else None,
                 }
                 for row in rows
             ],
