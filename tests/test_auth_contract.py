@@ -1,4 +1,5 @@
 from app.routers.v1 import auth as auth_router
+from app.routers.v1.auth_cookies import IMPERSONATION_META_COOKIE_NAME, IMPERSONATOR_ACCESS_COOKIE_NAME, IMPERSONATOR_REFRESH_COOKIE_NAME
 from app.services.auth_service import AuthService
 
 
@@ -134,6 +135,38 @@ def test_auth_logout_revokes_using_cookie_and_clears_auth_cookies(client, monkey
     set_cookie_header = response.headers.get("set-cookie", "")
     assert "yastubo_refresh_token=" in set_cookie_header
     assert "yastubo_access_token=" in set_cookie_header
+
+
+def test_auth_stop_impersonation_restores_original_refresh_cookie(client, monkeypatch) -> None:
+    def fake_refresh(_self, refresh_token: str) -> dict:
+        assert refresh_token == "original-refresh-token"
+        return {
+            "access_token": "restored-access-token",
+            "token_type": "bearer",
+            "expires_in": 3600,
+        }
+
+    monkeypatch.setattr(AuthService, "refresh", fake_refresh)
+
+    response = client.post(
+        "/api/v1/auth/impersonation/stop",
+        cookies={
+            IMPERSONATOR_REFRESH_COOKIE_NAME: "original-refresh-token",
+            IMPERSONATOR_ACCESS_COOKIE_NAME: "original-access-token",
+            IMPERSONATION_META_COOKIE_NAME: "eyJ0YXJnZXRfZW1haWwiOiJ0ZXN0QHRlc3QuY29tIn0",
+        },
+        headers={"accept": "application/json"},
+        json={},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload.get("ok") is True
+    assert (payload.get("data") or {}).get("restored") is True
+
+    set_cookie_header = response.headers.get("set-cookie", "")
+    assert "yastubo_access_token=restored-access-token" in set_cookie_header
+    assert "yastubo_refresh_token=original-refresh-token" in set_cookie_header
 
 
 def test_auth_login_rate_limit_returns_429_after_too_many_failures(client, monkeypatch) -> None:

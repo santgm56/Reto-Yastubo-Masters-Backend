@@ -14,6 +14,10 @@ class AuthLogoutRequest(BaseModel):
     refresh_token: str | None = None
 
 
+class AuthImpersonationStopRequest(BaseModel):
+    redirect_to: str | None = None
+
+
 class AuthPasswordCheckRequest(BaseModel):
     password: str
     first_name: str | None = None

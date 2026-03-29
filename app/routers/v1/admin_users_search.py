@@ -1,15 +1,30 @@
 import secrets
 import string
+from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.db.database import get_db
+from app.routers.v1.auth_cookies import (
+    ACCESS_COOKIE_MAX_AGE_SECONDS,
+    ACCESS_COOKIE_NAME,
+    IMPERSONATION_COOKIE_MAX_AGE_SECONDS,
+    IMPERSONATION_META_COOKIE_NAME,
+    IMPERSONATOR_ACCESS_COOKIE_NAME,
+    IMPERSONATOR_REFRESH_COOKIE_NAME,
+    REFRESH_COOKIE_MAX_AGE_SECONDS,
+    REFRESH_COOKIE_NAME,
+    encode_impersonation_meta,
+    set_auth_cookie,
+)
 from app.services.auth_service import AuthService, pwd_context
 
 router = APIRouter(prefix="/api/v1/admin/users", tags=["admin-users"])
+settings = get_settings()
 
 _STATUSES = [
     {"value": "active", "label": "Activo"},
@@ -56,6 +71,24 @@ def _require_any_permission(auth_payload: dict, *required: str) -> list[str]:
     if not any(permission in permissions for permission in required):
         raise HTTPException(status_code=403, detail="Forbidden")
     return permissions
+
+
+def _resolve_frontend_origin(request: Request) -> str:
+    origin = str(request.headers.get("origin") or "").strip().rstrip("/")
+    if origin:
+        return origin
+
+    referer = str(request.headers.get("referer") or "").strip()
+    if referer:
+        parts = urlsplit(referer)
+        if parts.scheme and parts.netloc:
+            return f"{parts.scheme}://{parts.netloc}"
+
+    fallback = str(settings.frontend_admin_legacy_base_url or "").strip().rstrip("/")
+    if fallback:
+        return fallback
+
+    return ""
 
 
 def _format_datetime(value) -> str | None:
@@ -122,6 +155,14 @@ def _load_user_roles(db: Session, user_id: int) -> list[dict]:
         }
         for row in rows
     ]
+
+
+def _load_user_role_names(db: Session, user_id: int) -> set[str]:
+    return {
+        str(item.get("name") or "").strip().lower()
+        for item in _load_user_roles(db, user_id)
+        if item.get("name")
+    }
 
 
 def _load_user_permissions(db: Session, user_id: int) -> list[str]:
@@ -1068,4 +1109,109 @@ def revoke_user_sessions(
         "ok": True,
         "message": f"Se revocaron {int(revoked)} sesiones del usuario.",
         "revoked": int(revoked),
+    }
+
+
+@router.post("/{user_id:int}/send-reset")
+def send_user_reset_link(
+    user_id: int,
+    request: Request,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+) -> dict:
+    auth_payload = _auth_payload(request, authorization, db)
+    _require_permission(auth_payload, "users.update")
+
+    row = _fetch_user_row(db, user_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    frontend_origin = _resolve_frontend_origin(request)
+    data = AuthService(db).send_admin_reset_link(user_id, frontend_origin)
+
+    return {
+        "ok": True,
+        "message": "Correo de reset enviado.",
+        "data": data,
+    }
+
+
+@router.post("/{user_id:int}/impersonate", response_model=None)
+def impersonate_user(
+    user_id: int,
+    request: Request,
+    response: Response,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    auth_payload = _auth_payload(request, authorization, db)
+    _require_any_permission(auth_payload, "users.impersonate", "impersonate")
+
+    actor_id = int(auth_payload.get("id") or 0)
+    if actor_id <= 0:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    if actor_id == int(user_id):
+        return _json_422("No puedes impersonarte a ti mismo.")
+
+    if str(request.cookies.get(IMPERSONATOR_REFRESH_COOKIE_NAME) or "").strip():
+        return _json_422("Ya existe una impersonación activa. Debes salir antes de iniciar otra.")
+
+    target_row = _fetch_user_row(db, user_id)
+    if not target_row:
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    if str(target_row.get("realm") or "").strip().lower() != "admin":
+        raise HTTPException(status_code=403, detail="Solo se permite impersonar usuarios del realm admin.")
+
+    if str(target_row.get("status") or "").strip().lower() != "active":
+        return _json_422("No puedes impersonar a un usuario que no está activo.")
+
+    actor_roles = _load_user_role_names(db, actor_id)
+    target_roles = _load_user_role_names(db, int(user_id))
+    if not actor_roles.intersection({"admin", "superadmin"}):
+        raise HTTPException(status_code=403, detail="No autorizado para impersonar.")
+
+    if "superadmin" in target_roles and "superadmin" not in actor_roles:
+        raise HTTPException(status_code=403, detail="Solo un superadmin puede impersonar a otro superadmin.")
+
+    original_refresh = str(request.cookies.get(REFRESH_COOKIE_NAME) or "").strip()
+    original_access = str(request.cookies.get(ACCESS_COOKIE_NAME) or _extract_bearer_token(authorization) or "").strip()
+    if not original_refresh or not original_access:
+        return _json_422("No se pudo preservar la sesión original para la impersonación.")
+
+    service = AuthService(db)
+    token_data = service.issue_tokens_for_user_id(int(user_id))
+
+    new_access = str(token_data.get("access_token") or "").strip()
+    new_refresh = str(token_data.get("refresh_token") or "").strip()
+    set_auth_cookie(response, ACCESS_COOKIE_NAME, new_access, ACCESS_COOKIE_MAX_AGE_SECONDS)
+    set_auth_cookie(response, REFRESH_COOKIE_NAME, new_refresh, REFRESH_COOKIE_MAX_AGE_SECONDS)
+    set_auth_cookie(response, IMPERSONATOR_ACCESS_COOKIE_NAME, original_access, ACCESS_COOKIE_MAX_AGE_SECONDS)
+    set_auth_cookie(response, IMPERSONATOR_REFRESH_COOKIE_NAME, original_refresh, REFRESH_COOKIE_MAX_AGE_SECONDS)
+
+    meta = {
+        "actor_id": actor_id,
+        "actor_email": str(auth_payload.get("email") or ""),
+        "target_id": int(user_id),
+        "target_email": str(target_row.get("email") or ""),
+        "started_at": _format_datetime(target_row.get("updated_at")) or _format_datetime(target_row.get("created_at")),
+    }
+    set_auth_cookie(
+        response,
+        IMPERSONATION_META_COOKIE_NAME,
+        encode_impersonation_meta(meta),
+        IMPERSONATION_COOKIE_MAX_AGE_SECONDS,
+    )
+
+    frontend_origin = _resolve_frontend_origin(request)
+    redirect_to = f"{frontend_origin}/admin" if frontend_origin else "/admin"
+
+    return {
+        "ok": True,
+        "message": f"Ahora estás impersonando a {target_row.get('email') or 'otro usuario'}.",
+        "redirect_to": redirect_to,
+        "data": {
+            "impersonation": meta,
+        },
     }

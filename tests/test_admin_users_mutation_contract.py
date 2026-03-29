@@ -1,5 +1,6 @@
 from app.db.database import get_db
 from app.main import app
+from app.routers.v1 import admin_users_search as admin_users_router
 from app.services.auth_service import AuthService
 
 
@@ -411,3 +412,95 @@ def test_admin_user_revoke_sessions_contract_shape(client, monkeypatch):
         "revoked": 3,
     }
     assert fake_db.sessions_by_user[11] == 0
+
+
+def test_admin_user_send_reset_contract_shape(client, monkeypatch):
+    fake_db = _FakeDb()
+
+    def fake_get_db():
+        yield fake_db
+
+    _override_auth(monkeypatch, permissions=["users.update"], actor_id=99)
+    monkeypatch.setattr(
+        AuthService,
+        "send_admin_reset_link",
+        lambda _self, user_id, frontend_origin: {
+            "email": fake_db.users[int(user_id)]["email"],
+            "queued": True,
+            "frontend_origin": frontend_origin,
+        },
+    )
+    app.dependency_overrides[get_db] = fake_get_db
+
+    try:
+        response = client.post(
+            "/api/v1/admin/users/11/send-reset",
+            cookies={"yastubo_access_token": "token-admin"},
+            headers={"origin": "http://127.0.0.1:8000"},
+            json={},
+        )
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["message"] == "Correo de reset enviado."
+    assert payload["data"]["email"] == "uno@test.com"
+
+
+def test_admin_user_impersonate_contract_shape_success(client, monkeypatch):
+    fake_db = _FakeDb()
+    fake_db.users[12]["status"] = "active"
+    fake_db.users[12]["deleted_at"] = None
+
+    def fake_get_db():
+        yield fake_db
+
+    _override_auth(monkeypatch, permissions=["users.impersonate"], actor_id=11)
+    monkeypatch.setattr(
+        admin_users_router,
+        "_load_user_role_names",
+        lambda _db, user_id: {"admin"} if int(user_id) == 11 else {"vendedor_regular"},
+    )
+    monkeypatch.setattr(
+        AuthService,
+        "issue_tokens_for_user_id",
+        lambda _self, user_id: {
+            "access_token": f"impersonated-access-{user_id}",
+            "refresh_token": f"impersonated-refresh-{user_id}",
+            "token_type": "bearer",
+            "expires_in": 3600,
+            "user": {
+                "id": int(user_id),
+                "email": fake_db.users[int(user_id)]["email"],
+                "role": "ADMIN",
+                "permissions": [],
+            },
+        },
+    )
+    app.dependency_overrides[get_db] = fake_get_db
+
+    try:
+        response = client.post(
+            "/api/v1/admin/users/12/impersonate",
+            cookies={
+                "yastubo_access_token": "actor-access-token",
+                "yastubo_refresh_token": "actor-refresh-token",
+            },
+            headers={"origin": "http://127.0.0.1:8000"},
+            json={},
+        )
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["redirect_to"] == "http://127.0.0.1:8000/admin"
+
+    set_cookie_header = response.headers.get("set-cookie", "")
+    assert "yastubo_access_token=impersonated-access-12" in set_cookie_header
+    assert "yastubo_refresh_token=impersonated-refresh-12" in set_cookie_header
+    assert "yastubo_impersonator_access_token=actor-access-token" in set_cookie_header
+    assert "yastubo_impersonator_refresh_token=actor-refresh-token" in set_cookie_header

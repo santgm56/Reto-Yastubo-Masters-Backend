@@ -23,6 +23,16 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_access_token_exp_minutes: int = 60
     jwt_refresh_token_exp_minutes: int = 60 * 24 * 7
+    mail_mailer: str = Field(default="log", alias="MAIL_MAILER")
+    mail_scheme: str = Field(default="", alias="MAIL_SCHEME")
+    mail_host: str = Field(default="127.0.0.1", alias="MAIL_HOST")
+    mail_port: int = Field(default=2525, alias="MAIL_PORT")
+    mail_username: str = Field(default="", alias="MAIL_USERNAME")
+    mail_password: str = Field(default="", alias="MAIL_PASSWORD")
+    mail_from_address: str = Field(default="noreply@example.test", alias="MAIL_FROM_ADDRESS")
+    mail_from_name: str = Field(default="Yastubo", alias="MAIL_FROM_NAME")
+    password_reset_admin_expire_minutes: int = Field(default=30, alias="PASSWORD_RESET_ADMIN_EXPIRE_MINUTES")
+    password_reset_admin_throttle_seconds: int = Field(default=60, alias="PASSWORD_RESET_ADMIN_THROTTLE_SECONDS")
     public_api_base_url: str = ""
     auth_cookie_secure: bool = False
     auth_cookie_samesite: str = "lax"

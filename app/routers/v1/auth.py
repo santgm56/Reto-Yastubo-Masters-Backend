@@ -1,12 +1,26 @@
 from uuid import uuid4
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.db.database import get_db
-from app.schemas.auth import AuthLoginRequest, AuthLogoutRequest, AuthPasswordCheckRequest, AuthRefreshRequest
+from app.routers.v1.auth_cookies import (
+    ACCESS_COOKIE_MAX_AGE_SECONDS,
+    ACCESS_COOKIE_NAME,
+    IMPERSONATION_META_COOKIE_NAME,
+    IMPERSONATOR_ACCESS_COOKIE_NAME,
+    IMPERSONATOR_REFRESH_COOKIE_NAME,
+    REFRESH_COOKIE_MAX_AGE_SECONDS,
+    REFRESH_COOKIE_NAME,
+    decode_impersonation_meta,
+    delete_auth_cookie,
+    set_auth_cookie,
+)
+from app.schemas.auth import AuthImpersonationStopRequest, AuthLoginRequest, AuthLogoutRequest, AuthPasswordCheckRequest, AuthRefreshRequest
 from app.schemas.common import ApiResponse
 from app.services.auth_service import AuthService
 
@@ -15,10 +29,6 @@ settings = get_settings()
 _LOGIN_ATTEMPTS: dict[str, list[datetime]] = {}
 _LOGIN_MAX_ATTEMPTS = 5
 _LOGIN_WINDOW_SECONDS = 900
-_REFRESH_COOKIE_NAME = "yastubo_refresh_token"
-_REFRESH_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 7
-_ACCESS_COOKIE_NAME = "yastubo_access_token"
-_ACCESS_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 8
 _PASSWORD_BANNED = ["password", "123456", "qwerty", "letmein", "admin"]
 
 
@@ -74,27 +84,28 @@ def _clear_attempts(key: str) -> None:
     _LOGIN_ATTEMPTS.pop(key, None)
 
 
-def _set_auth_cookie(response: Response, key: str, value: str, max_age: int) -> None:
-    domain = str(settings.auth_cookie_domain or "").strip() or None
-    response.set_cookie(
-        key=key,
-        value=value,
-        httponly=True,
-        samesite=str(settings.auth_cookie_samesite or "lax"),
-        secure=bool(settings.auth_cookie_secure),
-        max_age=max_age,
-        path=str(settings.auth_cookie_path or "/"),
-        domain=domain,
-    )
+def _wants_json_response(request: Request) -> bool:
+    accept = str(request.headers.get("accept") or "").lower()
+    requested_with = str(request.headers.get("x-requested-with") or "").lower()
+    return "application/json" in accept or requested_with == "xmlhttprequest"
 
 
-def _delete_auth_cookie(response: Response, key: str) -> None:
-    domain = str(settings.auth_cookie_domain or "").strip() or None
-    response.delete_cookie(
-        key=key,
-        path=str(settings.auth_cookie_path or "/"),
-        domain=domain,
-    )
+def _resolve_frontend_origin(request: Request) -> str:
+    origin = str(request.headers.get("origin") or "").strip().rstrip("/")
+    if origin:
+        return origin
+
+    referer = str(request.headers.get("referer") or "").strip()
+    if referer:
+        parts = urlsplit(referer)
+        if parts.scheme and parts.netloc:
+            return f"{parts.scheme}://{parts.netloc}"
+
+    fallback = str(settings.frontend_admin_legacy_base_url or "").strip().rstrip("/")
+    if fallback:
+        return fallback
+
+    return ""
 
 
 def _password_policy_payload() -> dict:
@@ -248,11 +259,15 @@ def login(
 
     refresh_token = str(data.get("refresh_token") or "").strip()
     if refresh_token:
-        _set_auth_cookie(response, _REFRESH_COOKIE_NAME, refresh_token, _REFRESH_COOKIE_MAX_AGE_SECONDS)
+        set_auth_cookie(response, REFRESH_COOKIE_NAME, refresh_token, REFRESH_COOKIE_MAX_AGE_SECONDS)
 
     access_token = str(data.get("access_token") or "").strip()
     if access_token:
-        _set_auth_cookie(response, _ACCESS_COOKIE_NAME, access_token, _ACCESS_COOKIE_MAX_AGE_SECONDS)
+        set_auth_cookie(response, ACCESS_COOKIE_NAME, access_token, ACCESS_COOKIE_MAX_AGE_SECONDS)
+
+    delete_auth_cookie(response, IMPERSONATOR_REFRESH_COOKIE_NAME)
+    delete_auth_cookie(response, IMPERSONATOR_ACCESS_COOKIE_NAME)
+    delete_auth_cookie(response, IMPERSONATION_META_COOKIE_NAME)
 
     public_data = dict(data)
     public_data.pop("refresh_token", None)
@@ -270,7 +285,7 @@ def refresh(
     service = AuthService(db)
 
     token_from_body = str((payload.refresh_token if payload else "") or "").strip()
-    token_from_cookie = str((request.cookies.get(_REFRESH_COOKIE_NAME) or "")).strip()
+    token_from_cookie = str((request.cookies.get(REFRESH_COOKIE_NAME) or "")).strip()
     refresh_token = token_from_body or token_from_cookie
 
     if not refresh_token:
@@ -309,7 +324,7 @@ def refresh(
 
     access_token = str(data.get("access_token") or "").strip()
     if access_token:
-        _set_auth_cookie(response, _ACCESS_COOKIE_NAME, access_token, _ACCESS_COOKIE_MAX_AGE_SECONDS)
+        set_auth_cookie(response, ACCESS_COOKIE_NAME, access_token, ACCESS_COOKIE_MAX_AGE_SECONDS)
 
     return ApiResponse(ok=True, message="Token renovado", data=data, request_id=_request_id())
 
@@ -322,7 +337,7 @@ def me(
 ) -> ApiResponse:
     token = _extract_bearer_token(authorization)
     if not token:
-        token = str(request.cookies.get(_ACCESS_COOKIE_NAME) or "").strip()
+        token = str(request.cookies.get(ACCESS_COOKIE_NAME) or "").strip()
 
     if not token:
         raise HTTPException(
@@ -363,12 +378,62 @@ def logout(
     service = AuthService(db)
 
     token_from_body = str((payload.refresh_token if payload else "") or "").strip()
-    token_from_cookie = str((request.cookies.get(_REFRESH_COOKIE_NAME) or "")).strip()
+    token_from_cookie = str((request.cookies.get(REFRESH_COOKIE_NAME) or "")).strip()
     refresh_token = token_from_body or token_from_cookie
 
     data = service.logout(refresh_token)
 
-    _delete_auth_cookie(response, _REFRESH_COOKIE_NAME)
-    _delete_auth_cookie(response, _ACCESS_COOKIE_NAME)
+    delete_auth_cookie(response, REFRESH_COOKIE_NAME)
+    delete_auth_cookie(response, ACCESS_COOKIE_NAME)
+    delete_auth_cookie(response, IMPERSONATOR_REFRESH_COOKIE_NAME)
+    delete_auth_cookie(response, IMPERSONATOR_ACCESS_COOKIE_NAME)
+    delete_auth_cookie(response, IMPERSONATION_META_COOKIE_NAME)
 
     return ApiResponse(ok=True, message="Sesion finalizada", data=data, request_id=_request_id())
+
+
+@router.post("/impersonation/stop")
+def stop_impersonation(
+    request: Request,
+    response: Response,
+    payload: AuthImpersonationStopRequest | None = None,
+    db: Session = Depends(get_db),
+):
+    original_refresh = str((request.cookies.get(IMPERSONATOR_REFRESH_COOKIE_NAME) or "")).strip()
+    original_access = str((request.cookies.get(IMPERSONATOR_ACCESS_COOKIE_NAME) or "")).strip()
+    meta = decode_impersonation_meta(request.cookies.get(IMPERSONATION_META_COOKIE_NAME)) or {}
+
+    fallback_redirect = str((payload.redirect_to if payload else "") or "").strip()
+    frontend_origin = _resolve_frontend_origin(request)
+    redirect_to = fallback_redirect or (f"{frontend_origin}/admin" if frontend_origin else "/admin")
+
+    restored = False
+    service = AuthService(db)
+
+    if original_refresh:
+        refreshed = service.refresh(original_refresh)
+        access_token = str(refreshed.get("access_token") or "").strip()
+        if access_token:
+            set_auth_cookie(response, ACCESS_COOKIE_NAME, access_token, ACCESS_COOKIE_MAX_AGE_SECONDS)
+            set_auth_cookie(response, REFRESH_COOKIE_NAME, original_refresh, REFRESH_COOKIE_MAX_AGE_SECONDS)
+            restored = True
+    elif original_access:
+        service.me(original_access)
+        set_auth_cookie(response, ACCESS_COOKIE_NAME, original_access, ACCESS_COOKIE_MAX_AGE_SECONDS)
+        restored = True
+
+    delete_auth_cookie(response, IMPERSONATOR_REFRESH_COOKIE_NAME)
+    delete_auth_cookie(response, IMPERSONATOR_ACCESS_COOKIE_NAME)
+    delete_auth_cookie(response, IMPERSONATION_META_COOKIE_NAME)
+
+    message = "Impersonación finalizada." if restored else "No había una impersonación activa."
+    data = {
+        "restored": restored,
+        "redirect_to": redirect_to,
+        "impersonation": meta,
+    }
+
+    if _wants_json_response(request):
+        return ApiResponse(ok=True, message=message, data=data, request_id=_request_id())
+
+    return RedirectResponse(url=redirect_to, status_code=303)

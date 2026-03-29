@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import hashlib
+import logging
+import secrets
+import smtplib
+from email.message import EmailMessage
+from urllib.parse import quote
 
 import jwt
 from passlib.exc import UnknownHashError
@@ -14,6 +19,7 @@ from app.core.config import get_settings
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 _REVOKED_REFRESH_TOKENS: dict[str, int] = {}
+_logger = logging.getLogger(__name__)
 
 
 class AuthService:
@@ -33,35 +39,7 @@ class AuthService:
         if not password_hash or not self._verify_password(password, password_hash):
             raise ValueError("Credenciales invalidas.")
 
-        user_id = int(user["id"])
-        role = str(user.get("realm") or "GUEST").upper()
-        permissions = self._load_permissions_for_user(user_id)
-
-        access_token = self._build_token(
-            user_id=user_id,
-            role=role,
-            token_type="access",
-            expires_in_minutes=self.settings.jwt_access_token_exp_minutes,
-        )
-        refresh_token = self._build_token(
-            user_id=user_id,
-            role=role,
-            token_type="refresh",
-            expires_in_minutes=self.settings.jwt_refresh_token_exp_minutes,
-        )
-
-        return {
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "token_type": "bearer",
-            "expires_in": self.settings.jwt_access_token_exp_minutes * 60,
-            "user": {
-                "id": user_id,
-                "name": str(user.get("name") or user.get("email") or ""),
-                "role": role,
-                "permissions": permissions,
-            },
-        }
+        return self.issue_tokens_for_user_id(int(user["id"]))
 
     def refresh(self, refresh_token: str) -> dict:
         self._cleanup_revoked_refresh_tokens()
@@ -113,6 +91,103 @@ class AuthService:
         _REVOKED_REFRESH_TOKENS[token_hash] = exp
 
         return {"revoked": True}
+
+    def issue_tokens_for_user_id(self, user_id: int) -> dict:
+        user = self._find_user_by_id(user_id)
+        if not user:
+            raise ValueError("Token invalido.")
+
+        if not self._is_user_active(user.get("status")):
+            raise PermissionError("La cuenta esta inactiva.")
+
+        role = str(user.get("realm") or "GUEST").upper()
+        permissions = self._load_permissions_for_user(user_id)
+
+        access_token = self._build_token(
+            user_id=user_id,
+            role=role,
+            token_type="access",
+            expires_in_minutes=self.settings.jwt_access_token_exp_minutes,
+        )
+        refresh_token = self._build_token(
+            user_id=user_id,
+            role=role,
+            token_type="refresh",
+            expires_in_minutes=self.settings.jwt_refresh_token_exp_minutes,
+        )
+
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer",
+            "expires_in": self.settings.jwt_access_token_exp_minutes * 60,
+            "user": {
+                "id": user_id,
+                "name": str(user.get("name") or user.get("email") or ""),
+                "email": str(user.get("email") or ""),
+                "role": role,
+                "permissions": permissions,
+            },
+        }
+
+    def send_admin_reset_link(self, user_id: int, frontend_origin: str) -> dict:
+        user = self._find_user_by_id(user_id)
+        if not user or str(user.get("realm") or "").strip().lower() != "admin":
+            raise ValueError("Usuario admin no encontrado.")
+
+        email = str(user.get("email") or "").strip().lower()
+        if not email:
+            raise ValueError("El usuario no tiene email valido.")
+
+        existing = self.db.execute(
+            text(
+                """
+                SELECT created_at
+                FROM password_reset_tokens_admin
+                WHERE email = :email
+                LIMIT 1
+                """
+            ),
+            {"email": email},
+        ).mappings().first()
+
+        created_at = self._coerce_datetime((existing or {}).get("created_at"))
+        now = datetime.now(tz=timezone.utc)
+        throttle_seconds = int(self.settings.password_reset_admin_throttle_seconds or 60)
+        if created_at and (now - created_at).total_seconds() < throttle_seconds:
+            raise ValueError("Debes esperar antes de solicitar otro correo de reset.")
+
+        token = secrets.token_urlsafe(48)
+        token_hash = pwd_context.hash(token)
+
+        self.db.execute(
+            text(
+                """
+                INSERT INTO password_reset_tokens_admin (email, token, created_at)
+                VALUES (:email, :token, :created_at)
+                ON DUPLICATE KEY UPDATE token = VALUES(token), created_at = VALUES(created_at)
+                """
+            ),
+            {
+                "email": email,
+                "token": token_hash,
+                "created_at": now.replace(tzinfo=None),
+            },
+        )
+        self.db.commit()
+
+        origin = str(frontend_origin or "").strip().rstrip("/")
+        reset_url = f"{origin}/admin/reset-password/{quote(token)}?email={quote(email)}"
+        self._send_admin_reset_email(
+            recipient=email,
+            display_name=str(user.get("name") or email),
+            reset_url=reset_url,
+        )
+
+        return {
+            "email": email,
+            "queued": True,
+        }
 
     def me(self, access_token: str) -> dict:
         claims = self._decode_token(access_token, expected_type="access")
@@ -269,6 +344,79 @@ class AuthService:
 
     def _hash_token(self, token: str) -> str:
         return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    def _send_admin_reset_email(self, recipient: str, display_name: str, reset_url: str) -> None:
+        subject = "Restablecer contraseña (Admin)"
+        minutes = int(self.settings.password_reset_admin_expire_minutes or 30)
+        text_body = (
+            f"Hola {display_name},\n\n"
+            f"Usa el siguiente enlace para restablecer tu contraseña de admin:\n{reset_url}\n\n"
+            f"Este enlace expirará en {minutes} minutos."
+        )
+        html_body = (
+            "<p>Hola {name},</p>"
+            "<p>Usa el siguiente enlace para restablecer tu contraseña de admin:</p>"
+            "<p><a href=\"{url}\">Restablecer contraseña</a></p>"
+            "<p>Este enlace expirará en {minutes} minutos.</p>"
+        ).format(name=display_name, url=reset_url, minutes=minutes)
+
+        mailer = str(self.settings.mail_mailer or "log").strip().lower()
+        if mailer == "log":
+            _logger.info(
+                "Admin password reset email queued",
+                extra={"recipient": recipient, "reset_url": reset_url},
+            )
+            return
+
+        message = EmailMessage()
+        message["Subject"] = subject
+        message["From"] = f"{self.settings.mail_from_name} <{self.settings.mail_from_address}>"
+        message["To"] = recipient
+        message.set_content(text_body)
+        message.add_alternative(html_body, subtype="html")
+
+        scheme = str(self.settings.mail_scheme or "").strip().lower()
+        host = str(self.settings.mail_host or "").strip()
+        port = int(self.settings.mail_port or 0)
+        username = str(self.settings.mail_username or "").strip()
+        password = str(self.settings.mail_password or "")
+
+        if scheme in {"ssl", "smtps"}:
+            with smtplib.SMTP_SSL(host, port or 465, timeout=10) as server:
+                if username:
+                    server.login(username, password)
+                server.send_message(message)
+            return
+
+        with smtplib.SMTP(host, port or 25, timeout=10) as server:
+            server.ehlo()
+            if scheme in {"tls", "starttls"}:
+                server.starttls()
+                server.ehlo()
+            if username:
+                server.login(username, password)
+            server.send_message(message)
+
+    def _coerce_datetime(self, value) -> datetime | None:
+        if value is None:
+            return None
+
+        if isinstance(value, datetime):
+            return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+        raw = str(value).strip()
+        if not raw:
+            return None
+
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            try:
+                parsed = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                return None
+
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
     def _is_refresh_token_revoked(self, token: str) -> bool:
         token_hash = self._hash_token(token)
