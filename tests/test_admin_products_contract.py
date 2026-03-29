@@ -115,6 +115,10 @@ def test_admin_products_index_contract(client, monkeypatch):
     assert response.status_code == 200
     payload = response.json()
     assert payload["meta"]["total"] == 1
+    assert payload["meta"]["product_types"] == [
+        {"value": "plan_capitado", "label": "Plan capitado"},
+        {"value": "plan_regular", "label": "Plan regular"},
+    ]
     assert payload["data"][0]["id"] == 101
 
 

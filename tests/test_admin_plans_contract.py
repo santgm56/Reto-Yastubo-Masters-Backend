@@ -22,7 +22,17 @@ class _FakeDb:
     def __init__(self):
         self.calls = []
         self.last_insert_id = 601
-        self.products = {101: {"id": 101}}
+        self.products = {
+            101: {
+                "id": 101,
+                "company_id": None,
+                "status": "active",
+                "product_type": "plan_regular",
+                "show_in_widget": 1,
+                "name": {"es": "Plan Oro", "en": "Gold Plan"},
+                "description": {"es": "Desc", "en": "Desc"},
+            }
+        }
         self.countries = {
             1: {
                 "id": 1,
@@ -74,11 +84,44 @@ class _FakeDb:
                 "product_id": 101,
                 "name": "Base v1",
                 "status": "active",
+                "max_entry_age": 70,
+                "max_renewal_age": 75,
+                "wtime_suicide": 30,
+                "wtime_preexisting_conditions": 60,
+                "wtime_accident": 0,
+                "country_id": 1,
+                "zone_id": 9,
+                "price_1": 199.9,
+                "price_2": None,
+                "price_3": None,
+                "price_4": None,
+                "terms_file_es_id": 77,
+                "terms_file_en_id": 78,
                 "terms_html": {"es": "<p>Hola</p>", "en": "<p>Hello</p>"},
                 "created_at": "2026-03-20 10:00:00",
                 "updated_at": "2026-03-20 10:00:00",
             }
         }
+        self.plan_version_coverage_rows = [
+            {
+                "id": 801,
+                "plan_version_id": 501,
+                "coverage_id": 901,
+                "sort_order": 1,
+                "value_int": 10000,
+                "value_decimal": None,
+                "value_text": {"es": "Cobertura", "en": "Coverage"},
+                "notes": {"es": "Nota", "en": "Note"},
+                "coverage_name": {"es": "Asistencia", "en": "Assistance"},
+                "coverage_description": {"es": "Desc", "en": "Desc"},
+                "unit_name": {"es": "USD", "en": "USD"},
+                "unit_measure_type": "money",
+                "category_id": 301,
+                "category_name": {"es": "Basicas", "en": "Basic"},
+                "category_description": {"es": "Base", "en": "Base"},
+                "category_sort_order": 1,
+            }
+        ]
 
     def execute(self, statement, params=None):
         sql = str(statement)
@@ -130,6 +173,19 @@ class _FakeDb:
                 return _FakeResult(first_row=row)
             return _FakeResult(first_row=None)
 
+        if "FROM plan_version_coverages pvc" in sql and "coverage_name" in sql:
+            plan_version_id = int(params.get("plan_version_id") or 0)
+            rows = [
+                row
+                for row in self.plan_version_coverage_rows
+                if int(row.get("plan_version_id") or 0) == plan_version_id
+            ]
+            if "pvc.id = :pvc_id" in sql:
+                pvc_id = int(params.get("pvc_id") or 0)
+                matched = next((row for row in rows if int(row.get("id") or 0) == pvc_id), None)
+                return _FakeResult(first_row=matched)
+            return _FakeResult(all_rows=rows)
+
         if "SELECT terms_html" in sql and "FROM plan_versions" in sql:
             plan_version_id = int(params.get("plan_version_id") or 0)
             product_id = int(params.get("product_id") or 0)
@@ -160,6 +216,9 @@ class _FakeDb:
                     "product_id": int(source.get("product_id") or 0),
                     "name": params.get("name") or "",
                     "status": "inactive",
+                    "terms_file_es_id": source.get("terms_file_es_id"),
+                    "terms_file_en_id": source.get("terms_file_en_id"),
+                    "terms_html": source.get("terms_html"),
                     "created_at": "2026-03-27 12:00:00",
                     "updated_at": "2026-03-27 12:00:00",
                 }
@@ -332,7 +391,35 @@ def test_admin_plans_index_contract(client, monkeypatch):
     assert response.status_code == 200
     payload = response.json()
     assert payload["meta"]["total"] == 1
+    assert payload["meta"]["product"]["id"] == 101
+    assert payload["meta"]["product_types"] == [
+        {"value": "plan_capitado", "label": "Plan capitado"},
+        {"value": "plan_regular", "label": "Plan regular"},
+    ]
     assert payload["data"][0]["id"] == 501
+
+
+def test_admin_plans_show_bootstrap_contract(client, monkeypatch):
+    fake_db = _FakeDb()
+    _setup(monkeypatch, fake_db, permissions=["admin.products.manage"])
+
+    try:
+        response = client.get(
+            "/api/v1/admin/products/101/plans/501",
+            cookies={"yastubo_access_token": "token-admin"},
+        )
+    finally:
+        _teardown()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["data"]["product"]["id"] == 101
+    assert payload["data"]["plan_version"]["id"] == 501
+    assert payload["data"]["coverage_categories"][0]["id"] == 301
+    assert payload["meta"]["product_types"] == [
+        {"value": "plan_capitado", "label": "Plan capitado"},
+        {"value": "plan_regular", "label": "Plan regular"},
+    ]
 
 
 def test_admin_plans_store_contract(client, monkeypatch):
@@ -371,6 +458,21 @@ def test_admin_plans_clone_contract(client, monkeypatch):
     payload = response.json()
     assert payload["data"]["id"] == 603
     assert payload["redirect_url"] == "/admin/products/101/plans/603/edit"
+
+    cloned = fake_db.plan_versions[603]
+    assert cloned["terms_file_es_id"] == 77
+    assert cloned["terms_file_en_id"] == 78
+    assert cloned["terms_html"]["es"] == "<p>Hola</p>"
+    assert cloned["terms_html"]["en"] == "<p>Hello</p>"
+
+    clone_insert_call = next(
+        call
+        for call in fake_db.calls
+        if "INSERT INTO plan_versions" in call["sql"] and "FROM plan_versions" in call["sql"]
+    )
+    assert "terms_file_es_id" in clone_insert_call["sql"]
+    assert "terms_file_en_id" in clone_insert_call["sql"]
+    assert "terms_html" in clone_insert_call["sql"]
 
 
 def test_admin_plans_destroy_contract(client, monkeypatch):

@@ -163,7 +163,19 @@ class AuthService:
         try:
             return pwd_context.verify(plain_password, normalized_hash)
         except (ValueError, UnknownHashError):
-            return False
+            # Fallback para entornos donde passlib+bcrypt falla por incompatibilidad
+            # del backend (detectado en algunos setups con Python 3.14).
+            try:
+                import bcrypt
+
+                return bool(
+                    bcrypt.checkpw(
+                        plain_password.encode("utf-8"),
+                        normalized_hash.encode("utf-8"),
+                    )
+                )
+            except Exception:
+                return False
 
     def _is_user_active(self, status: object) -> bool:
         normalized = str(status or "ACTIVE").strip().upper()
@@ -173,9 +185,16 @@ class AuthService:
         row = self.db.execute(
             text(
                 """
-                SELECT id, name, email, password, status, realm
+                SELECT
+                    id,
+                    COALESCE(NULLIF(display_name, ''), NULLIF(CONCAT_WS(' ', first_name, last_name), ''), email) AS name,
+                    email,
+                    password,
+                    status,
+                    realm
                 FROM users
                 WHERE email = :email
+                  AND deleted_at IS NULL
                 LIMIT 1
                 """
             ),
@@ -188,9 +207,16 @@ class AuthService:
         row = self.db.execute(
             text(
                 """
-                SELECT id, name, email, password, status, realm
+                SELECT
+                    id,
+                    COALESCE(NULLIF(display_name, ''), NULLIF(CONCAT_WS(' ', first_name, last_name), ''), email) AS name,
+                    email,
+                    password,
+                    status,
+                    realm
                 FROM users
                 WHERE id = :user_id
+                  AND deleted_at IS NULL
                 LIMIT 1
                 """
             ),

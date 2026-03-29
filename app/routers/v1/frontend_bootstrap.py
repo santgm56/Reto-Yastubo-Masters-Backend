@@ -52,6 +52,14 @@ def _map_role_to_channel(role: str) -> str:
     return "web"
 
 
+def _resolve_public_api_base_url(request: Request) -> str:
+    configured = str(get_settings().public_api_base_url or "").strip().rstrip("/")
+    if configured:
+        return configured
+
+    return str(request.base_url).strip().rstrip("/")
+
+
 @router.get("/bootstrap", response_model=ApiResponse)
 def bootstrap(
     request: Request,
@@ -82,7 +90,7 @@ def bootstrap(
         "perPageShort": 5,
         "perPageMedium": 10,
         "perPageLarge": 15,
-        "apiBaseUrl": str(settings.public_api_base_url or "").strip(),
+        "apiBaseUrl": _resolve_public_api_base_url(request),
         "apiCutoverEnabled": True,
         "abilities": _to_abilities_map(permissions),
     }

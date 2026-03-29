@@ -22,6 +22,13 @@ from app.routers.v1 import admin_regalias as admin_regalias_router
 from app.routers.v1 import admin_users_search as admin_users_search_router
 from app.routers.v1 import admin_products as admin_products_router
 from app.routers.v1 import admin_plans as admin_plans_router
+from app.routers.v1 import admin_coverages as admin_coverages_router
+from app.routers.v1 import admin_countries as admin_countries_router
+from app.routers.v1 import admin_zones as admin_zones_router
+from app.routers.v1 import admin_config as admin_config_router
+from app.routers.v1 import admin_business_units as admin_business_units_router
+from app.routers.v1 import admin_acl_roles_permissions as admin_acl_roles_permissions_router
+from app.routers.v1 import admin_templates as admin_templates_router
 from app.routers.v1 import cancellations as cancellations_router
 from app.routers.v1 import frontend_bootstrap as frontend_bootstrap_router
 from app.routers.v1 import issuance as issuance_router
@@ -69,6 +76,13 @@ app.include_router(admin_regalias_router.router)
 app.include_router(admin_users_search_router.router)
 app.include_router(admin_products_router.router)
 app.include_router(admin_plans_router.router)
+app.include_router(admin_coverages_router.router)
+app.include_router(admin_countries_router.router)
+app.include_router(admin_zones_router.router)
+app.include_router(admin_config_router.router)
+app.include_router(admin_business_units_router.router)
+app.include_router(admin_acl_roles_permissions_router.router)
+app.include_router(admin_templates_router.router)
 app.include_router(seller_dashboard_router.router)
 app.include_router(customer_shell_router.router)
 app.include_router(backoffice_shell.router)

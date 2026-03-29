@@ -21,6 +21,13 @@ _COLOR_PATTERN = re.compile(r"^#?[0-9A-Fa-f]{3}([0-9A-Fa-f]{3})?$")
 _ALLOWED_STATUSES = {"active", "inactive", "archived"}
 
 
+def _normalize_status_filter(status: str | None) -> str:
+    normalized = str(status or "active").strip().lower()
+    if normalized in {"active", "inactive", "archived", "all"}:
+        return normalized
+    return "active"
+
+
 def _extract_bearer_token(authorization: str | None) -> str:
     if not authorization:
         return ""
@@ -84,6 +91,62 @@ def _fetch_company_row(db: Session, company_id: int):
         ),
         {"company_id": int(company_id)},
     ).mappings().first()
+
+
+def _fetch_companies_for_index(db: Session, status: str, search: str) -> list[dict]:
+    where_clauses = ["1 = 1"]
+    params: dict[str, object] = {}
+
+    if status != "all":
+        where_clauses.append("status = :status")
+        params["status"] = status
+
+    if search:
+        where_clauses.append(
+            """
+            (
+                name LIKE :search
+                OR short_code LIKE :search
+                OR phone LIKE :search
+                OR email LIKE :search
+            )
+            """
+        )
+        params["search"] = f"%{search}%"
+
+    rows = db.execute(
+        text(
+            f"""
+            SELECT
+                id,
+                name,
+                short_code,
+                phone,
+                email,
+                description,
+                status,
+                commission_beneficiary_user_id,
+                branding_logo_file_id,
+                pdf_template_id,
+                branding_text_dark,
+                branding_bg_light,
+                branding_text_light,
+                branding_bg_dark
+            FROM companies
+            WHERE {' AND '.join(where_clauses)}
+            ORDER BY name ASC
+            """
+        ),
+        params,
+    ).mappings().all()
+
+    payload: list[dict] = []
+    for row in rows:
+        users_ids = _fetch_company_user_ids(db=db, company_id=int(row["id"]))
+        logo_payload = _fetch_logo_payload(db=db, branding_logo_file_id=row.get("branding_logo_file_id"))
+        payload.append(_serialize_company(row, users_ids, logo_payload))
+
+    return payload
 
 
 def _fetch_company_user_ids(db: Session, company_id: int) -> list[int]:
@@ -506,6 +569,34 @@ def _build_company_response(db: Session, company_id: int) -> dict:
             "logo": None,
         },
         "pdf_templates": _fetch_pdf_templates(db=db),
+    }
+
+
+@router.get("")
+def index_companies(
+    request: Request,
+    status: str = "active",
+    search: str = "",
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+) -> dict:
+    _require_admin(request=request, authorization=authorization, db=db)
+
+    normalized_status = _normalize_status_filter(status)
+    normalized_search = str(search or "").strip()
+
+    companies = _fetch_companies_for_index(
+        db=db,
+        status=normalized_status,
+        search=normalized_search,
+    )
+
+    return {
+        "companies": companies,
+        "filters": {
+            "status": normalized_status,
+            "search": normalized_search,
+        },
     }
 
 

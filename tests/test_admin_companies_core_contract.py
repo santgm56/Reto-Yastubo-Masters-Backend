@@ -23,6 +23,56 @@ class _FakeDb:
     def __init__(self):
         self.calls = []
         self.next_company_id = 23
+        self.index_rows = [
+            {
+                "id": 22,
+                "name": "Compania Test",
+                "short_code": "TEST",
+                "phone": "555000",
+                "email": "company@test.com",
+                "description": "Desc",
+                "status": "active",
+                "commission_beneficiary_user_id": 8,
+                "branding_logo_file_id": None,
+                "pdf_template_id": 7,
+                "branding_text_dark": None,
+                "branding_bg_light": None,
+                "branding_text_light": None,
+                "branding_bg_dark": None,
+            },
+            {
+                "id": 24,
+                "name": "Beta Salud",
+                "short_code": "BETA",
+                "phone": "555111",
+                "email": "beta@test.com",
+                "description": "Desc",
+                "status": "inactive",
+                "commission_beneficiary_user_id": None,
+                "branding_logo_file_id": None,
+                "pdf_template_id": None,
+                "branding_text_dark": None,
+                "branding_bg_light": None,
+                "branding_text_light": None,
+                "branding_bg_dark": None,
+            },
+            {
+                "id": 25,
+                "name": "Gamma Life",
+                "short_code": "GAMM",
+                "phone": "555222",
+                "email": "gamma@test.com",
+                "description": "Desc",
+                "status": "archived",
+                "commission_beneficiary_user_id": None,
+                "branding_logo_file_id": None,
+                "pdf_template_id": None,
+                "branding_text_dark": None,
+                "branding_bg_light": None,
+                "branding_text_light": None,
+                "branding_bg_dark": None,
+            },
+        ]
         self.company = {
             "id": 22,
             "name": "Compania Test",
@@ -51,6 +101,12 @@ class _FakeDb:
         params = params or {}
         self.calls.append({"sql": sql, "params": params})
 
+        # Keep list fixture aligned with the mutable primary company row.
+        self.index_rows = [
+            dict(self.company) if int(row.get("id") or 0) == int(self.company["id"]) else row
+            for row in self.index_rows
+        ]
+
         if "FROM companies" in sql and "UPPER(short_code)" in sql:
             short_code = str(params.get("short_code") or "")
             if short_code == "DUPL":
@@ -69,6 +125,27 @@ class _FakeDb:
 
         if "SELECT LAST_INSERT_ID() AS id" in sql:
             return _FakeResult(first_row={"id": self.next_company_id})
+
+        if "FROM companies" in sql and "ORDER BY name ASC" in sql:
+            rows = list(self.index_rows)
+            status_filter = str(params.get("status") or "").strip()
+            search_filter = str(params.get("search") or "").strip().strip("%")
+
+            if status_filter:
+                rows = [row for row in rows if str(row.get("status") or "") == status_filter]
+
+            if search_filter:
+                query = search_filter.lower()
+                rows = [
+                    row
+                    for row in rows
+                    if query in str(row.get("name") or "").lower()
+                    or query in str(row.get("short_code") or "").lower()
+                    or query in str(row.get("phone") or "").lower()
+                    or query in str(row.get("email") or "").lower()
+                ]
+
+            return _FakeResult(all_rows=rows)
 
         if "FROM companies" in sql and "WHERE id = :company_id" in sql:
             if int(params.get("company_id") or 0) == int(self.company["id"]):
@@ -153,6 +230,45 @@ def test_admin_companies_show_contract(client, monkeypatch):
     assert payload["data"]["short_code"] == "TEST"
     assert isinstance(payload["assigned_users"], list)
     assert isinstance(payload["pdf_templates"], list)
+
+
+def test_admin_companies_index_contract(client, monkeypatch):
+    fake_db = _FakeDb()
+    _setup_admin(monkeypatch, fake_db)
+
+    try:
+        response = client.get(
+            "/api/v1/admin/companies?status=inactive&search=beta",
+            cookies={"yastubo_access_token": "token-admin"},
+        )
+    finally:
+        _teardown_override()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["filters"]["status"] == "inactive"
+    assert payload["filters"]["search"] == "beta"
+    assert len(payload["companies"]) == 1
+    assert payload["companies"][0]["short_code"] == "BETA"
+
+
+def test_admin_companies_index_invalid_status_defaults_to_active(client, monkeypatch):
+    fake_db = _FakeDb()
+    _setup_admin(monkeypatch, fake_db)
+
+    try:
+        response = client.get(
+            "/api/v1/admin/companies?status=invalid-status",
+            cookies={"yastubo_access_token": "token-admin"},
+        )
+    finally:
+        _teardown_override()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["filters"]["status"] == "active"
+    assert len(payload["companies"]) == 1
+    assert payload["companies"][0]["id"] == 22
 
 
 

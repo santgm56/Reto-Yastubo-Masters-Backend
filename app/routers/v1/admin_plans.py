@@ -11,6 +11,8 @@ from app.services.auth_service import AuthService
 
 router = APIRouter(prefix="/api/v1/admin/products", tags=["admin-plans"])
 
+_ALLOWED_PRODUCT_TYPES = ("plan_capitado", "plan_regular")
+
 
 def _extract_bearer_token(authorization: str | None) -> str:
     if not authorization:
@@ -46,6 +48,49 @@ def _validation_error(errors: dict[str, list[str]]) -> None:
             "errors": errors,
         },
     )
+
+
+def _product_type_label(product_type: str) -> str:
+    return {
+        "plan_regular": "Plan regular",
+        "plan_capitado": "Plan capitado",
+    }.get(product_type, product_type.replace("_", " ").strip().title())
+
+
+def _serialize_product_type_options() -> list[dict]:
+    return [
+        {
+            "value": product_type,
+            "label": _product_type_label(product_type),
+        }
+        for product_type in sorted(_ALLOWED_PRODUCT_TYPES)
+    ]
+
+
+def _fetch_product_row(db: Session, product_id: int):
+    return db.execute(
+        text(
+            """
+            SELECT id, company_id, status, product_type, show_in_widget, name, description
+            FROM products
+            WHERE id = :product_id
+            LIMIT 1
+            """
+        ),
+        {"product_id": int(product_id)},
+    ).mappings().first()
+
+
+def _serialize_product(row) -> dict:
+    return {
+        "id": int(row["id"]),
+        "company_id": int(row.get("company_id")) if row.get("company_id") is not None else None,
+        "status": str(row.get("status") or "inactive"),
+        "product_type": str(row.get("product_type") or ""),
+        "show_in_widget": bool(row.get("show_in_widget")),
+        "name": _serialize_translatable(row.get("name")),
+        "description": _serialize_translatable(row.get("description")),
+    }
 
 
 def _serialize_plan_version(row) -> dict:
@@ -94,6 +139,39 @@ def _fetch_plan_version(db: Session, product_id: int, plan_version_id: int):
     ).mappings().first()
 
 
+def _fetch_plan_version_detail(db: Session, product_id: int, plan_version_id: int):
+    return db.execute(
+        text(
+            """
+            SELECT
+                id,
+                product_id,
+                name,
+                status,
+                max_entry_age,
+                max_renewal_age,
+                wtime_suicide,
+                wtime_preexisting_conditions,
+                wtime_accident,
+                country_id,
+                zone_id,
+                price_1,
+                price_2,
+                price_3,
+                price_4
+            FROM plan_versions
+            WHERE id = :plan_version_id
+              AND product_id = :product_id
+            LIMIT 1
+            """
+        ),
+        {
+            "plan_version_id": int(plan_version_id),
+            "product_id": int(product_id),
+        },
+    ).mappings().first()
+
+
 def _serialize_plan_version_detail(row) -> dict:
     return {
         "id": int(row["id"]),
@@ -113,6 +191,65 @@ def _serialize_plan_version_detail(row) -> dict:
         "price_4": float(row.get("price_4")) if row.get("price_4") is not None else None,
         "can_be_activated": True,
     }
+
+
+def _fetch_plan_version_coverage_rows(db: Session, plan_version_id: int):
+    return db.execute(
+        text(
+            """
+            SELECT
+                pvc.id,
+                pvc.plan_version_id,
+                pvc.coverage_id,
+                pvc.sort_order,
+                pvc.value_int,
+                pvc.value_decimal,
+                pvc.value_text,
+                pvc.notes,
+                c.name AS coverage_name,
+                c.description AS coverage_description,
+                u.name AS unit_name,
+                u.measure_type AS unit_measure_type,
+                cc.id AS category_id,
+                cc.name AS category_name,
+                cc.description AS category_description,
+                cc.sort_order AS category_sort_order
+            FROM plan_version_coverages pvc
+            INNER JOIN coverages c ON c.id = pvc.coverage_id
+            LEFT JOIN units_of_measure u ON u.id = c.unit_id
+            LEFT JOIN coverage_categories cc ON cc.id = c.category_id
+            WHERE pvc.plan_version_id = :plan_version_id
+            ORDER BY cc.sort_order, cc.id, pvc.sort_order, pvc.id
+            """
+        ),
+        {"plan_version_id": int(plan_version_id)},
+    ).mappings().all()
+
+
+def _group_coverage_categories(rows) -> list[dict]:
+    categories: list[dict] = []
+    by_category_id: dict[int, dict] = {}
+
+    for row in rows:
+        category_id = int(row.get("category_id") or 0)
+        if category_id <= 0:
+            continue
+
+        category = by_category_id.get(category_id)
+        if category is None:
+            category = {
+                "id": category_id,
+                "name": _serialize_translatable(row.get("category_name")),
+                "description": _serialize_translatable(row.get("category_description")),
+                "sort_order": int(row.get("category_sort_order") or 0),
+                "coverages": [],
+            }
+            by_category_id[category_id] = category
+            categories.append(category)
+
+        category["coverages"].append(_serialize_plan_version_coverage_row(row))
+
+    return categories
 
 
 @router.get("/{product_id:int}/plans")
@@ -139,7 +276,43 @@ def index_plan_versions(
 
     return {
         "data": [_serialize_plan_version(row) for row in rows],
-        "meta": {"total": len(rows)},
+        "meta": {
+            "total": len(rows),
+            "product": _serialize_product(_fetch_product_row(db=db, product_id=int(product_id))),
+            "product_types": _serialize_product_type_options(),
+        },
+    }
+
+
+@router.get("/{product_id:int}/plans/{plan_version_id:int}")
+def show_plan_version_bootstrap(
+    product_id: int,
+    plan_version_id: int,
+    request: Request,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+) -> dict:
+    _require_admin_products_manage(request=request, authorization=authorization, db=db)
+
+    product = _fetch_product_row(db=db, product_id=int(product_id))
+    if not product:
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    plan_version = _fetch_plan_version_detail(db=db, product_id=int(product_id), plan_version_id=int(plan_version_id))
+    if not plan_version:
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    coverage_rows = _fetch_plan_version_coverage_rows(db=db, plan_version_id=int(plan_version_id))
+
+    return {
+        "data": {
+            "product": _serialize_product(product),
+            "plan_version": _serialize_plan_version_detail(plan_version),
+            "coverage_categories": _group_coverage_categories(coverage_rows),
+        },
+        "meta": {
+            "product_types": _serialize_product_type_options(),
+        },
     }
 
 

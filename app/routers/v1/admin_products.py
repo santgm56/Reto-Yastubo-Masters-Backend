@@ -165,6 +165,23 @@ def _serialize_product(row) -> dict:
     }
 
 
+def _product_type_label(product_type: str) -> str:
+    return {
+        "plan_regular": "Plan regular",
+        "plan_capitado": "Plan capitado",
+    }.get(product_type, product_type.replace("_", " ").strip().title())
+
+
+def _serialize_product_type_options() -> list[dict]:
+    return [
+        {
+            "value": product_type,
+            "label": _product_type_label(product_type),
+        }
+        for product_type in sorted(_ALLOWED_PRODUCT_TYPES)
+    ]
+
+
 def _fetch_product(db: Session, product_id: int):
     return db.execute(
         text(
@@ -202,6 +219,7 @@ def index_products(
         "data": [_serialize_product(row) for row in rows],
         "meta": {
             "total": len(rows),
+            "product_types": _serialize_product_type_options(),
         },
     }
 
