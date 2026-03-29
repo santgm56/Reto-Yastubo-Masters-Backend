@@ -1,11 +1,14 @@
+from pathlib import Path
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.core.config import get_settings
+from app.core.shell_metrics import get_snapshot as get_shell_metrics_snapshot
 from app.routers.customer import payments as customer_payments_router
 from app.routers.customer import portal as customer_portal_router
 from app.routers.v1 import auth as auth_router
@@ -39,6 +42,7 @@ from app.routers.v1 import seller_dashboard as seller_dashboard_router
 from app.routers.web import backoffice_shell, customer_shell as customer_shell_router
 
 settings = get_settings()
+frontend_public_path = (Path(__file__).resolve().parents[2] / ".." / "frontend-yastubo" / "public").resolve()
 
 app = FastAPI(
     title=settings.app_name,
@@ -53,6 +57,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+if frontend_public_path.exists():
+    app.mount("/assets", StaticFiles(directory=str(frontend_public_path / "assets")), name="frontend-assets")
 
 app.include_router(issuance_router.router)
 app.include_router(payments_router.router)
@@ -145,3 +152,12 @@ async def validation_exception_handler(_: Request, exc: RequestValidationError) 
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"ok": "true", "service": settings.app_name}
+
+
+@app.get("/health/shells")
+def health_shells() -> dict[str, object]:
+    return {
+        "ok": "true",
+        "service": settings.app_name,
+        "shells": get_shell_metrics_snapshot(),
+    }

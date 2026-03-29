@@ -44,7 +44,7 @@ def test_admin_and_seller_shell_served_by_fastapi_when_enabled(client) -> None:
     assert "window.__F3_BACKOFFICE_CONTEXT__" in seller_body
 
 
-def test_admin_and_seller_shell_redirect_to_legacy_when_disabled(client) -> None:
+def test_admin_and_seller_shell_return_503_when_disabled_even_if_legacy_redirect_is_enabled(client) -> None:
     original_admin_enabled = backoffice_shell.settings.frontend_admin_shell_enabled
     original_seller_enabled = backoffice_shell.settings.frontend_seller_shell_enabled
     original_admin_legacy = backoffice_shell.settings.frontend_admin_legacy_base_url
@@ -73,11 +73,11 @@ def test_admin_and_seller_shell_redirect_to_legacy_when_disabled(client) -> None
         backoffice_shell.settings.frontend_admin_legacy_redirect_enabled = original_admin_legacy_redirect_enabled
         backoffice_shell.settings.frontend_seller_legacy_redirect_enabled = original_seller_legacy_redirect_enabled
 
-    assert admin_response.status_code == 307
-    assert admin_response.headers.get("location") == "http://127.0.0.1:8000/admin/reportes"
+    assert admin_response.status_code == 503
+    assert "shell no disponible" in admin_response.text
 
-    assert seller_response.status_code == 307
-    assert seller_response.headers.get("location") == "http://127.0.0.1:8000/seller/ordenes"
+    assert seller_response.status_code == 503
+    assert "shell no disponible" in seller_response.text
 
 
 def test_backoffice_shell_returns_503_when_legacy_redirects_are_globally_disabled(client) -> None:
@@ -140,8 +140,8 @@ def test_admin_shell_returns_503_when_admin_legacy_redirect_is_disabled(client) 
 
     assert admin_response.status_code == 503
     assert "shell no disponible" in admin_response.text
-    assert seller_response.status_code == 307
-    assert seller_response.headers.get("location") == "http://127.0.0.1:8000/seller/ordenes"
+    assert seller_response.status_code == 503
+    assert "shell no disponible" in seller_response.text
 
 
 def test_seller_shell_returns_503_when_seller_legacy_redirect_is_disabled(client) -> None:
@@ -173,7 +173,7 @@ def test_seller_shell_returns_503_when_seller_legacy_redirect_is_disabled(client
         backoffice_shell.settings.frontend_admin_legacy_redirect_enabled = original_admin_legacy_redirect_enabled
         backoffice_shell.settings.frontend_seller_legacy_redirect_enabled = original_seller_legacy_redirect_enabled
 
-    assert admin_response.status_code == 307
-    assert admin_response.headers.get("location") == "http://127.0.0.1:8000/admin/reportes"
+    assert admin_response.status_code == 503
+    assert "shell no disponible" in admin_response.text
     assert seller_response.status_code == 503
     assert "shell no disponible" in seller_response.text

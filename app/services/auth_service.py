@@ -160,22 +160,29 @@ class AuthService:
     def _verify_password(self, plain_password: str, password_hash: str) -> bool:
         # Compatibilidad con hashes bcrypt emitidos por Laravel ($2y$).
         normalized_hash = password_hash.replace("$2y$", "$2b$")
+        verified = False
         try:
-            return pwd_context.verify(plain_password, normalized_hash)
+            verified = bool(pwd_context.verify(plain_password, normalized_hash))
         except (ValueError, UnknownHashError):
-            # Fallback para entornos donde passlib+bcrypt falla por incompatibilidad
-            # del backend (detectado en algunos setups con Python 3.14).
-            try:
-                import bcrypt
+            verified = False
 
-                return bool(
-                    bcrypt.checkpw(
-                        plain_password.encode("utf-8"),
-                        normalized_hash.encode("utf-8"),
-                    )
+        if verified:
+            return True
+
+        # Fallback para entornos donde passlib+bcrypt falla por incompatibilidad
+        # del backend (detectado en algunos setups con Python 3.14) o donde
+        # passlib devuelve falso negativo pese a tratarse de un hash bcrypt valido.
+        try:
+            import bcrypt
+
+            return bool(
+                bcrypt.checkpw(
+                    plain_password.encode("utf-8"),
+                    normalized_hash.encode("utf-8"),
                 )
-            except Exception:
-                return False
+            )
+        except Exception:
+            return False
 
     def _is_user_active(self, status: object) -> bool:
         normalized = str(status or "ACTIVE").strip().upper()
