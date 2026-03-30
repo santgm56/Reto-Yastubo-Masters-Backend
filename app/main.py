@@ -9,37 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.core.config import get_settings
 from app.core.shell_metrics import get_snapshot as get_shell_metrics_snapshot
-from app.routers.customer import payments as customer_payments_router
-from app.routers.customer import portal as customer_portal_router
-from app.routers.v1 import auth as auth_router
-from app.routers.v1 import audit as audit_router
-from app.routers.v1 import admin_companies_core as admin_companies_core_router
-from app.routers.v1 import admin_companies_capitated_batches as admin_companies_capitated_batches_router
-from app.routers.v1 import admin_companies_capitated_contracts as admin_companies_capitated_contracts_router
-from app.routers.v1 import admin_companies_capitated_monthly_reports as admin_companies_capitated_monthly_reports_router
-from app.routers.v1 import admin_companies_short_code as admin_companies_short_code_router
-from app.routers.v1 import admin_companies_commission_users_available as admin_companies_commission_users_available_router
-from app.routers.v1 import admin_companies_users as admin_companies_users_router
-from app.routers.v1 import admin_companies_status as admin_companies_status_router
-from app.routers.v1 import admin_regalias as admin_regalias_router
-from app.routers.v1 import admin_users_search as admin_users_search_router
-from app.routers.v1 import admin_products as admin_products_router
-from app.routers.v1 import admin_plans as admin_plans_router
-from app.routers.v1 import admin_coverages as admin_coverages_router
-from app.routers.v1 import admin_countries as admin_countries_router
-from app.routers.v1 import admin_zones as admin_zones_router
-from app.routers.v1 import admin_config as admin_config_router
-from app.routers.v1 import admin_business_units as admin_business_units_router
-from app.routers.v1 import admin_acl_roles_permissions as admin_acl_roles_permissions_router
-from app.routers.v1 import admin_templates as admin_templates_router
-from app.routers.v1 import cancellations as cancellations_router
-from app.routers.v1 import frontend_bootstrap as frontend_bootstrap_router
-from app.routers.v1 import issuance as issuance_router
-from app.routers.v1 import payments as payments_router
-from app.routers.v1 import public_files as public_files_router
-from app.routers.v1 import public_capitated_contracts as public_capitated_contracts_router
-from app.routers.v1 import seller_dashboard as seller_dashboard_router
-from app.routers.web import backoffice_shell, customer_shell as customer_shell_router
+from app.routers import include_all_routers
 
 settings = get_settings()
 frontend_public_path = (Path(__file__).resolve().parents[2] / ".." / "frontend-yastubo" / "public").resolve()
@@ -61,38 +31,7 @@ app.add_middleware(
 if frontend_public_path.exists():
     app.mount("/assets", StaticFiles(directory=str(frontend_public_path / "assets")), name="frontend-assets")
 
-app.include_router(issuance_router.router)
-app.include_router(payments_router.router)
-app.include_router(cancellations_router.router)
-app.include_router(auth_router.router)
-app.include_router(frontend_bootstrap_router.router)
-app.include_router(public_files_router.router)
-app.include_router(public_capitated_contracts_router.router)
-app.include_router(customer_payments_router.router)
-app.include_router(customer_portal_router.router)
-app.include_router(audit_router.router)
-app.include_router(admin_companies_short_code_router.router)
-app.include_router(admin_companies_commission_users_available_router.router)
-app.include_router(admin_companies_users_router.router)
-app.include_router(admin_companies_status_router.router)
-app.include_router(admin_companies_capitated_batches_router.router)
-app.include_router(admin_companies_capitated_contracts_router.router)
-app.include_router(admin_companies_capitated_monthly_reports_router.router)
-app.include_router(admin_companies_core_router.router)
-app.include_router(admin_regalias_router.router)
-app.include_router(admin_users_search_router.router)
-app.include_router(admin_products_router.router)
-app.include_router(admin_plans_router.router)
-app.include_router(admin_coverages_router.router)
-app.include_router(admin_countries_router.router)
-app.include_router(admin_zones_router.router)
-app.include_router(admin_config_router.router)
-app.include_router(admin_business_units_router.router)
-app.include_router(admin_acl_roles_permissions_router.router)
-app.include_router(admin_templates_router.router)
-app.include_router(seller_dashboard_router.router)
-app.include_router(customer_shell_router.router)
-app.include_router(backoffice_shell.router)
+include_all_routers(app)
 
 
 def _request_id() -> str:

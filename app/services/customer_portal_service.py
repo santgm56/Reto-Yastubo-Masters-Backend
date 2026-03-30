@@ -27,6 +27,47 @@ class CustomerPortalService:
     _state_by_user: dict[str, _CustomerPortalState] = {}
     _lock = Lock()
 
+    @staticmethod
+    def _normalize_document(value: str | None) -> str:
+        return str(value or "").strip().lower()
+
+    def _find_beneficiary_by_document(self, state: _CustomerPortalState, document: str | None) -> dict | None:
+        normalized_document = self._normalize_document(document)
+
+        if not normalized_document:
+            return None
+
+        return next(
+            (
+                item for item in state.beneficiaries
+                if self._normalize_document(item.get("documento")) == normalized_document
+            ),
+            None,
+        )
+
+    def _build_death_report_context(self, state: _CustomerPortalState, payload: dict | None = None) -> list[dict]:
+        active_payload = payload if isinstance(payload, dict) else state.death_report.get("payload", {})
+        titular = next(
+            (item for item in state.beneficiaries if str(item.get("parentesco") or "").strip().lower() == "titular"),
+            state.beneficiaries[0] if state.beneficiaries else None,
+        )
+        affected_person = self._find_beneficiary_by_document(state, active_payload.get("documentoFallecido"))
+
+        if affected_person:
+            affected_label = f"{affected_person.get('nombre', 'Persona protegida')} · {affected_person.get('parentesco', 'Beneficiario')}"
+            relationship_label = "Titular del plan" if str(affected_person.get("parentesco") or "").strip().lower() == "titular" else "Beneficiario registrado"
+        else:
+            affected_name = str(active_payload.get("nombreFallecido") or "").strip()
+            affected_label = affected_name or "Pendiente de relacionar"
+            relationship_label = "Sin relacion confirmada"
+
+        return [
+            {"key": "policy-context", "label": "Contexto poliza", "value": "Disponible"},
+            {"key": "reporter-person", "label": "Quien reporta", "value": titular.get("nombre", "Titular portal") if titular else "Titular portal"},
+            {"key": "affected-person", "label": "Persona reportada", "value": affected_label},
+            {"key": "coverage-link", "label": "Relacion con tu cobertura", "value": relationship_label},
+        ]
+
     def _get_state(self, user_id: str | None) -> _CustomerPortalState:
         user_key = _normalize_user_key(user_id)
 
@@ -63,10 +104,7 @@ class CustomerPortalService:
                         "fechaReporte": "",
                     },
                     "operationalState": "normal",
-                    "context": [
-                        {"key": "policy-context", "label": "Contexto poliza", "value": "Disponible"},
-                        {"key": "support-channel", "label": "Canal soporte", "value": "Portal cliente"},
-                    ],
+                    "context": [],
                 },
                 death_sequence=0,
                 payment_method={
@@ -77,6 +115,7 @@ class CustomerPortalService:
                     "updated_at": _now_iso(),
                 },
             )
+            seeded.death_report["context"] = self._build_death_report_context(seeded)
             self._state_by_user[user_key] = seeded
             return seeded
 
@@ -221,6 +260,7 @@ class CustomerPortalService:
 
     def death_report_show(self, user_id: str | None) -> dict:
         state = self._get_state(user_id)
+        state.death_report["context"] = self._build_death_report_context(state)
         return state.death_report
 
     def death_report_store(self, payload: dict, user_id: str | None) -> dict:
@@ -245,8 +285,9 @@ class CustomerPortalService:
                 "fechaReporte": _now_iso(),
             },
             "operationalState": "normal",
-            "context": state.death_report.get("context", []),
+            "context": [],
         }
+        state.death_report["context"] = self._build_death_report_context(state, state.death_report["payload"])
         return state.death_report
 
     def payment_method_show(self, user_id: str | None) -> dict:
